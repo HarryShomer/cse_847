@@ -4,3 +4,6 @@ hw3/
 lectures/
 SLEP
 *.pdf
+cora/
+citeseer/
+pubmed/

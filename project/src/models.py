@@ -97,7 +97,7 @@ class APPNP(torch.nn.Module):
     """
     APPNP Implementation
     """
-    def __init__(self, feat_dim, num_hidden, num_classes, iters, alpha, appnp_drop=.2, mlp_drop=0.2):
+    def __init__(self, feat_dim, num_hidden, num_classes, iters, alpha, appnp_drop=.2, mlp_drop=0.1):
         super().__init__()
         self.dropout = appnp_drop
 
@@ -118,3 +118,24 @@ class APPNP(torch.nn.Module):
         x = self.conv_layer(x, edge_index)
 
         return x
+
+
+class SGC(torch.nn.Module):
+    """
+    SGC Implementation
+    """
+    def __init__(self, feat_dim, num_classes, k):
+        """
+        """
+        super().__init__()
+        self.conv_layer = conv_layers.SGConv(feat_dim, num_classes, k=k)
+
+       
+
+    def forward(self, data):
+        """
+        Aggregate
+        """
+        x, edge_index = data.x, data.edge_index
+
+        return self.conv_layer(x, edge_index)
