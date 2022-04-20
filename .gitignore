@@ -7,3 +7,5 @@ SLEP
 cora/
 citeseer/
 pubmed/
+data/
+__pycache__/

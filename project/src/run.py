@@ -1,54 +1,44 @@
 import torch 
+import optuna
 import argparse
 import numpy as np
-from tqdm import tqdm
 
-import optuna
-from optuna.trial import TrialState
-
+import torch.nn.functional as F
+import torch_geometric.transforms as T
 from torch_geometric.datasets import Planetoid
-from torch_geometric.loader import DataLoader
 
 from utils import *
 from models import *
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", help="Model to run. One of 'GCN', 'GAT', 'APPNP', 'SGC")
+parser.add_argument("--model", help="Model to run. One of 'GCN', 'GAT', 'APPNP', 'SGC'")
 parser.add_argument("--dataset", help="One of 'cora', 'citeseer', 'pubmed'")
 
 parser.add_argument("--tune", help="Tune Model via Optuna", action='store_true', default=False)
+parser.add_argument("--run-from-config", help="Whether run with tuned parms", action="store_true", default=False)
 
-parser.add_argument("--epochs", help="Number of epochs to run", default=250, type=int)
-parser.add_argument("--bs", help="Batch size to use for training", default=1, type=int)
+parser.add_argument("--epochs", help="Number of epochs to run", default=200, type=int)
 parser.add_argument("--lr", help="Learning rate to use while training", default=1e-3, type=float)
-parser.add_argument("--decay", help="LR Decay", default=.999, type=float)
+parser.add_argument("--decay", help="LR Decay", default=1, type=float)
+parser.add_argument("--l2", help="L2 Regularization", default=0, type=float)
 
 ## Hyperparameters
+parser.add_argument("--num-hid", help="Num hidden dimension", default=64, type=int)
 parser.add_argument("--layers", help="Number of layers for model", default=2, type=int)
 parser.add_argument("--dropout", help="Dropout to apply", default=0.2, type=float)
 parser.add_argument("--num-heads", help="Number Attention heads to use for GAT", default=8, type=int)
 parser.add_argument("--iters", help="Smoothing iterations for APPNP", default=10, type=int)
 parser.add_argument("--alpha", help="Teleportation probability for APPNP", default=0.1, type=float)
-parser.add_argument("--mlp-drop", help="MLP Dropout to apply", default=0.1, type=float)
 
-parser.add_argument("--validation", help="Test on validation set every n epochs", type=int, default=5)
-parser.add_argument("--early-stop", help="Number of validation scores to wait for an increase before stopping", default=10, type=int)
 parser.add_argument("--save-as", help="Model to save model as", default=None, type=str)
-
-parser.add_argument("--test", help="Whether testing model", action='store_true', default=False)
-parser.add_argument("--model-run", help="Name of checkpoint file to load", type=str)
-
 parser.add_argument("--device", help="Device to run on", type=str, default="cuda")
+parser.add_argument("--seed", help="Random Seed", default=None, type=int)
+
 args = parser.parse_args()
 
 MODEL = args.model.lower()
 DEVICE = args.device
-
-# Randomness!!!
-np.random.seed(42)
-torch.manual_seed(42)
-torch.cuda.manual_seed_all(42)
 
 
 def get_dataset():
@@ -60,7 +50,7 @@ def get_dataset():
     if dataset not in ['cora', 'citeseer', 'pubmed']:
         raise ValueError(f"No dataset named `{dataset}`")
 
-    return Planetoid(PROJECT_DIR, "cora", "public")
+    return Planetoid(PROJECT_DIR, dataset, "public", transform=T.NormalizeFeatures())
 
 
 
@@ -71,16 +61,15 @@ def create_model(dataset):
     Parameters:
     -----------
         dataset: torch_geometric.dataset.Planetoid
-            dataset object
+            dataset
 
     Returns:
     --------
     torch.nn.Module
         Model implemeted
     """
-    # Constant!
+    num_hidden = args.num_hid
     num_feats = dataset.num_features
-    num_hidden = 64
     num_classes = dataset.num_classes
 
     if MODEL == "gcn":
@@ -88,9 +77,45 @@ def create_model(dataset):
     elif MODEL == "gat":
         model = GAT(num_feats, num_hidden, num_classes, heads=args.num_heads, dropout=args.dropout, num_layers=args.layers)
     elif MODEL == "appnp":
-        model = APPNP(num_feats, num_hidden, num_classes, args.iters, args.alpha, appnp_drop=args.dropout, mlp_drop=args.mlp_drop)
+        model = APPNP(num_feats, num_hidden, num_classes, args.iters, args.alpha, appnp_drop=args.dropout)
     elif MODEL == "sgc":
         model = SGC(num_feats, num_classes, args.layers)
+    else:
+        raise ValueError(f"No model named `{args.model}`")
+    
+    model = model.to(DEVICE)
+
+    return model 
+
+
+def create_model_from_config(dataset, model_params):
+    """
+    Create the model using the config params
+
+    Parameters:
+    -----------
+        dataset: torch_geometric.dataset.Planetoid
+            dataset
+        model_params: dict
+            Dict of model parameters from config
+
+    Returns:
+    --------
+    torch.nn.Module
+        Model implemeted
+    """
+    num_feats = dataset.num_features
+    num_classes = dataset.num_classes
+    hid_dim = model_params['hidden_dim']
+
+    if MODEL == "gcn":
+        model = GCN(num_feats, hid_dim, num_classes, dropout=model_params['dropout'], num_layers=2)
+    elif MODEL == "gat":
+        model = GAT(num_feats, hid_dim, num_classes, dropout=model_params['dropout'], num_layers=2)
+    elif MODEL == "appnp":
+        model = APPNP(num_feats, hid_dim, num_classes, model_params['iters'], model_params['alpha'], appnp_drop=model_params['dropout'])
+    elif MODEL == "sgc":
+        model = SGC(num_feats, num_classes, 2)
     else:
         raise ValueError(f"No model named `{args.model}`")
     
@@ -103,51 +128,34 @@ def eval_model(model, data, mask):
     """
     Evaluate model on val/test set
 
+    Portion taken from here - https://github.com/pyg-team/pytorch_geometric/blob/master/examples/gcn.py
+
     Parameters:
     -----------
-        model:
-        dataloader:
+        model: torch.nn.Mo
+            model obj
+        data: PyTorch-Geometruc data obj
+            data obj
+        mask: str
+            Either 'val' or 'test'
 
     Returns:
     --------
     float
         accuracy
     """
-    mask = data.val_mask if mask == "val" else data.test_mask
-    
     model.eval()
+    mask = data.val_mask if mask == "val" else data.test_mask
 
     out = model(data)
-    acc = float((out[mask].argmax(-1) == data.y[mask]).sum() / mask.sum())
+    pred = out[mask].max(1)[1]
+    acc = pred.eq(data.y[mask]).sum().item() / mask.sum().item()
 
     return acc
 
 
 
-# def eval_on_test_set(model, data):
-#     """
-#     Evaluate the model on the test set and print results
-
-#     Parameters:
-#     -----------
-#         model: torch.nn.Module
-#             Model we are training
-    
-#     Returns:
-#     --------
-#     None
-#     """
-#     dataset
-#     test_loader = DataLoader(test_data, batch_size=1, shuffle=False)
-
-#     model = load_model(model, args.model_run)
-#     f1score = eval_model(model, test_loader)
-
-#     print("Test F1 Score:", f1score)
-
-
-
-def train_model(model, data, lr, decay):
+def train_model(model, data, lr, decay, l2):
     """
     Parameters:
     -----------
@@ -158,43 +166,47 @@ def train_model(model, data, lr, decay):
     --------
     None
     """
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda e: decay ** e)
-
-    loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
-
     val_scores = []
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2)
 
-    model.train()
-    for epoch in range(1, args.epochs+1):
+    if decay != 1:
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda e: decay ** e)
+    else:
+        lr_scheduler = None
+        
+    for _ in range(1, args.epochs+1):
+        model.train()
         optimizer.zero_grad()
 
         out = model(data)
-        loss = loss_fn(out[data.train_mask], data.y[data.train_mask])
+        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
         
         loss.backward()
         optimizer.step()
         
-        print(f"Epoch {epoch} Loss:", round(loss, 4))
-        
-        # if epoch % args.validation == 0:
-        #     val_scores.append(eval_model(model, data, "val"))
-
-        #     print(f"Epoch {epoch} Val Acc Score:", round(val_scores[-1], 4))
-
-        #     # Start checking after accumulate more than val_mrr
-        #     if len(val_scores) >= args.early_stop and np.argmax(val_scores[-args.early_stop:]) == 0:
-        #         print(f"Validation loss hasn't improved in the last {args.early_stop} validation mean rank scores. Stopping training now!", flush=True)
-        #         break
-        
-        lr_scheduler.step()
+        val_scores.append(eval_model(model, data, "val"))
+        if lr_scheduler: lr_scheduler.step()
     
-    # Only use param when passed bec. otherwise None
-    if args.save_as:
-        save_model(args.save_as, model, optimizer)
-    else:
-        save_model(args.model.upper(), model, optimizer)
+    return val_scores[-1]
 
+
+def run_model():
+    """
+    Run model either from args or config
+    """
+    dataset = get_dataset()
+    data = dataset[0].to(args.device)
+
+    # If not from config we run via cmd line args
+    if args.run_from_config:
+        params = load_config_params(MODEL, args.dataset.lower())
+        model = create_model_from_config(dataset, params)
+        train_model(model, data, params['lr'], params['decay'], params['l2'])
+    else:
+        model = create_model(dataset)
+        train_model(model, data, args.lr, args.decay, args.l2)
+    
+    print("Test Acc:", eval_model(model, data, "test"))
 
 
 
@@ -204,24 +216,27 @@ def run_tuned_model(trial):
     """
     data = get_dataset()
 
-    lr = trial.suggest_float("lr", 1e-4, 1e-2)
-    dropout = trial.suggest_float("dropout", 0, 0.4)
     decay = trial.suggest_categorical("decay", [0.995, 0.999, 1])
-    layers = trial.suggest_categorical("layers", [2, 3, 4])
+    lr = trial.suggest_categorical("lr", [1e-3, 5e-3, 1e-2, 5e-2])
+    hid_dim = trial.suggest_categorical("hidden_dim", [16, 32, 64])
+    dropout = trial.suggest_categorical("dropout", [0, 0.2, 0.4, 0.6, 0.8])
+    l2 = trial.suggest_categorical("l2", [0, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3])
 
     if MODEL == "appnp":
-        iters = trial.suggest_categorical("iters", [5, 10, 50, 100])
-        alpha = trial.suggest_categorical("alpha", [0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1])
-        model = APPNP(data.num_features, 64, data.num_classes, iters, alpha, appnp_drop=dropout)
+        iters = trial.suggest_categorical("iters", [5, 10, 25, 50, 100])
+        alpha = trial.suggest_categorical("alpha", [0, .1, .25, .5, .75, 1])
+        model = APPNP(data.num_features, hid_dim, data.num_classes, iters, alpha, appnp_drop=dropout)
     elif MODEL == "gcn":
-        model = GCN(data.num_features, 64, data.num_classes, dropout=dropout, num_layers=layers)
+        model = GCN(data.num_features, hid_dim, data.num_classes, dropout=dropout, num_layers=args.layers)
     elif MODEL == "gat":
-        model = GAT(data.num_features, 64, data.num_classes, heads=args.num_heads, dropout=dropout, num_layers=layers)
+        model = GAT(data.num_features, hid_dim, data.num_classes, heads=args.num_heads, dropout=dropout, num_layers=args.layers)
     else:
-         model = SGC(data.num_features, data.num_classes, layers)
+        model = SGC(data.num_features, data.num_classes, args.layers)
+    
+    model = model.to(args.device)
+    data = data[0].to(args.device)
 
-
-    train_model(model, data, lr, decay)
+    return train_model(model, data, lr, decay, l2)
 
 
 def tune_model():
@@ -233,40 +248,24 @@ def tune_model():
                 pruner=optuna.pruners.MedianPruner(),
             )
 
-    study.optimize(run_tuned_model, n_trials=250)
+    study.optimize(run_tuned_model, n_trials=500)
 
-    pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
-    complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
-
-    print("Study statistics: ")
-    print("  Number of finished trials: ", len(study.trials))
-    print("  Number of pruned trials: ", len(pruned_trials))
-    print("  Number of complete trials: ", len(complete_trials))
-
-    print("Best trial:")
-    trial = study.best_trial
-
-    print("  Value: ", trial.value)
-
-    print("  Params: ")
-    for key, value in trial.params.items():
-        print("    {}: {}".format(key, value))
-
-
-
+    print(f"{args.dataset.capitalize()} Best Value:", study.best_value, flush=True)
+    print(f"{args.dataset.capitalize()} Best Parameters:", study.best_params, flush=True)
 
 
 
 def main():
+    # Randomness!!!
+    if args.seed is not None:
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
-    tune_model()
-    # model = create_model()
-    # dataset = get_dataset()
-
-    # if not args.test:
-    #     train_model(model, dataset, args.lr, args.decay)
-    # else:
-    #     eval_on_test_set(model, dataset)
+    if args.tune:
+        tune_model()
+    else:
+        run_model()
 
 
 if __name__ == "__main__":

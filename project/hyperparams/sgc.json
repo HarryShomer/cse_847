@@ -1,0 +1,25 @@
+{
+    "cora": {
+        "lr": 5e-2,
+        "hidden_dim": 16,
+        "dropout": 0,
+        "decay": 1,
+        "l2": 1e-4
+    },
+
+    "pubmed": {
+        "lr": 5e-2,
+        "hidden_dim": 64,
+        "dropout": 0.2,
+        "decay": 0.999,
+        "l2": 1e-4
+    },
+
+    "citeseer": {
+        "lr": 5e-2,
+        "hidden_dim": 16,
+        "dropout": 0.2,
+        "decay": 1,
+        "l2": 1e-4
+    }
+}

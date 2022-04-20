@@ -1,9 +1,35 @@
 import os 
 import time
+import json
 import torch
 
-PROJECT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)))
+PROJECT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "data")
 CHECKPOINT_DIR = os.path.join(PROJECT_DIR, "checkpoints")
+
+
+
+def load_config_params(model_name, dataset_name):
+    """
+    Load params from `best_params/model_name.json` for specific dataset
+
+    Parameters:
+    -----------
+        model_name: str
+            Name of model
+        dataset_name: str
+            Name of dataset
+
+    Returns:
+    --------
+    dict
+        Params in file
+    """
+    folder = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "hyperparams")
+
+    with open(os.path.join(folder, f"{model_name}.json"), "r") as f:
+        params = json.load(f)[dataset_name]
+    
+    return params
 
 
 def save_model(model_name, model, optimizer):

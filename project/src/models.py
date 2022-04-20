@@ -1,7 +1,6 @@
 import torch
 import torch.nn.functional as F
 import torch_geometric.nn as conv_layers
-# from torch_geometric.nn.models import MLP
 
 
 class MLP(torch.nn.Module):
@@ -30,7 +29,6 @@ class MLP(torch.nn.Module):
         return x
 
 
-
 class GCN(torch.nn.Module):
     """
     Graph Convolutional Network
@@ -40,12 +38,12 @@ class GCN(torch.nn.Module):
         self.dropout = dropout
         self.convs = torch.nn.ModuleList()
 
-        self.convs.append(conv_layers.GCNConv(feat_dim, hidden_dim))
+        self.convs.append(conv_layers.GCNConv(feat_dim, hidden_dim, cached=True))
 
         for _ in range(num_layers-2):
-            self.convs.append(conv_layers.GCNConv(hidden_dim, hidden_dim))
+            self.convs.append(conv_layers.GCNConv(hidden_dim, hidden_dim, cached=True))
         
-        self.convs.append(conv_layers.GCNConv(hidden_dim, num_classes))
+        self.convs.append(conv_layers.GCNConv(hidden_dim, num_classes, cached=True))
 
 
     def forward(self, data):
@@ -54,19 +52,22 @@ class GCN(torch.nn.Module):
         """
         x, edge_index = data.x, data.edge_index
 
-        for conv in self.convs:
-            x = F.dropout(x, self.dropout)
-            x = F.relu(x)
+        for conv in self.convs[:-1]:
             x = conv(x, edge_index)
+            x = F.relu(x)
+            x = F.dropout(x, self.dropout, self.training)
 
-        return x
+        x = self.convs[-1](x, edge_index)
+
+        return F.log_softmax(x, dim=1)
+
 
 
 class GAT(torch.nn.Module):
     """
     Graph Attention Network
     """
-    def __init__(self, feat_dim, hidden_dim, num_classes, heads=8, dropout=.2, num_layers=2):
+    def __init__(self, feat_dim, hidden_dim, num_classes, heads=8, dropout=.6, num_layers=2):
         super().__init__()
         self.dropout = dropout
         self.convs = torch.nn.ModuleList()
@@ -85,12 +86,16 @@ class GAT(torch.nn.Module):
         """
         x, edge_index = data.x, data.edge_index
 
-        for conv in self.convs:
-            x = F.dropout(x, self.dropout)
-            x = F.elu(x)
+        for i, conv in enumerate(self.convs):
+            x = F.dropout(x, self.dropout, training=self.training)
             x = conv(x, edge_index)
 
-        return x
+            # Don't apply for last layer
+            if i != len(self.convs) - 1:
+                x = F.elu(x)
+        
+        return F.log_softmax(x, dim=1)
+
 
 
 class APPNP(torch.nn.Module):
@@ -111,13 +116,13 @@ class APPNP(torch.nn.Module):
         """
         x, edge_index = data.x, data.edge_index
 
-        x = F.dropout(x, p=self.dropout)
+        x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.mlp(x)
         x = F.relu(x)
-        x = F.dropout(x, p=self.dropout)
+        x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.conv_layer(x, edge_index)
 
-        return x
+        return F.log_softmax(x, dim=1)
 
 
 class SGC(torch.nn.Module):
@@ -128,14 +133,14 @@ class SGC(torch.nn.Module):
         """
         """
         super().__init__()
-        self.conv_layer = conv_layers.SGConv(feat_dim, num_classes, k=k)
+        self.conv_layer = conv_layers.SGConv(feat_dim, num_classes, K=k, cached=True)
 
        
-
     def forward(self, data):
         """
         Aggregate
         """
         x, edge_index = data.x, data.edge_index
+        x = self.conv_layer(x, edge_index)
 
-        return self.conv_layer(x, edge_index)
+        return F.log_softmax(x, dim=1)
