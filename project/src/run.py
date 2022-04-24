@@ -77,7 +77,7 @@ def create_model(dataset):
     elif MODEL == "gat":
         model = GAT(num_feats, num_hidden, num_classes, heads=args.num_heads, dropout=args.dropout, num_layers=args.layers)
     elif MODEL == "appnp":
-        model = APPNP(num_feats, num_hidden, num_classes, args.iters, args.alpha, appnp_drop=args.dropout)
+        model = APPNP(num_feats, num_hidden, num_classes, args.iters, args.alpha, dropout=args.dropout)
     elif MODEL == "sgc":
         model = SGC(num_feats, num_classes, args.layers)
     else:
@@ -113,7 +113,7 @@ def create_model_from_config(dataset, model_params):
     elif MODEL == "gat":
         model = GAT(num_feats, hid_dim, num_classes, dropout=model_params['dropout'], num_layers=2)
     elif MODEL == "appnp":
-        model = APPNP(num_feats, hid_dim, num_classes, model_params['iters'], model_params['alpha'], appnp_drop=model_params['dropout'])
+        model = APPNP(num_feats, hid_dim, num_classes, model_params['iters'], model_params['alpha'], dropout=model_params['dropout'])
     elif MODEL == "sgc":
         model = SGC(num_feats, num_classes, 2)
     else:
@@ -174,7 +174,7 @@ def train_model(model, data, lr, decay, l2):
     else:
         lr_scheduler = None
         
-    for _ in range(1, args.epochs+1):
+    for epoch in range(1, args.epochs+1):
         model.train()
         optimizer.zero_grad()
 
@@ -185,6 +185,8 @@ def train_model(model, data, lr, decay, l2):
         optimizer.step()
         
         val_scores.append(eval_model(model, data, "val"))
+        # print(f"Epoch {epoch}: {val_scores[-1]:.2f}")
+        
         if lr_scheduler: lr_scheduler.step()
     
     return val_scores[-1]
@@ -225,7 +227,7 @@ def run_tuned_model(trial):
     if MODEL == "appnp":
         iters = trial.suggest_categorical("iters", [5, 10, 25, 50, 100])
         alpha = trial.suggest_categorical("alpha", [0, .1, .25, .5, .75, 1])
-        model = APPNP(data.num_features, hid_dim, data.num_classes, iters, alpha, appnp_drop=dropout)
+        model = APPNP(data.num_features, hid_dim, data.num_classes, iters, alpha, dropout=dropout)
     elif MODEL == "gcn":
         model = GCN(data.num_features, hid_dim, data.num_classes, dropout=dropout, num_layers=args.layers)
     elif MODEL == "gat":

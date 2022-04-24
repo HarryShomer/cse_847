@@ -1,32 +1,7 @@
 import torch
+from torch.nn import Linear
 import torch.nn.functional as F
 import torch_geometric.nn as conv_layers
-
-
-class MLP(torch.nn.Module):
-    """
-    2 Layer MLP
-    """
-    def __init__(self, in_channels, hid_channels, out_channels, dropout):
-        super().__init__()
-        self.dropout = dropout
-
-        self.bn = torch.nn.BatchNorm1d(hid_channels)
-        self.fc1 = torch.nn.Linear(in_channels, hid_channels)
-        self.fc2 = torch.nn.Linear(hid_channels, out_channels)
-    
-
-    def forward(self, x):
-        """
-        Forward Pass
-        """
-        x = self.fc1(x)
-        x = self.bn(x)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.dropout)
-        x = self.fc2(x)
-
-        return x
 
 
 class GCN(torch.nn.Module):
@@ -97,29 +72,28 @@ class GAT(torch.nn.Module):
         return F.log_softmax(x, dim=1)
 
 
-
 class APPNP(torch.nn.Module):
     """
     APPNP Implementation
     """
-    def __init__(self, feat_dim, num_hidden, num_classes, iters, alpha, appnp_drop=.2, mlp_drop=0.1):
+    def __init__(self, feat_dim, num_hidden, num_classes, iters, alpha, dropout=.2):
         super().__init__()
-        self.dropout = appnp_drop
+        self.dropout = dropout
 
-        self.mlp = MLP(feat_dim, num_hidden, num_classes, dropout=mlp_drop)
+        self.mlp1 = Linear(feat_dim, num_hidden)
+        self.mlp2 = Linear(num_hidden, num_classes)
         self.conv_layer = conv_layers.APPNP(iters, alpha)
 
-
     def forward(self, data):
-        """
-        Aggregate - MLP + Smoothing
-        """
         x, edge_index = data.x, data.edge_index
 
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.mlp(x)
+        x = self.mlp1(x)
         x = F.relu(x)
+
         x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.mlp2(x)
+
         x = self.conv_layer(x, edge_index)
 
         return F.log_softmax(x, dim=1)
